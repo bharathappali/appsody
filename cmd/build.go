@@ -15,6 +15,10 @@
 package cmd
 
 import (
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,6 +31,7 @@ type buildCommandConfig struct {
 	*RootCommandConfig
 	tag                string
 	dockerBuildOptions string
+	criu			   bool
 }
 
 func checkDockerBuildOptions(options []string) error {
@@ -56,12 +61,34 @@ func newBuildCmd(rootConfig *RootCommandConfig) *cobra.Command {
 		},
 	}
 
-	buildCmd.PersistentFlags().StringVarP(&config.tag, "tag", "t", "", "Docker image name and optionally a tag in the 'name:tag' format")
+	buildCmd.PersistentFlags().StringVarP(&config.tag, "tag", "t", "", "Docker image name testing and optionally a tag in the 'name:tag' format")
 	buildCmd.PersistentFlags().StringVar(&config.dockerBuildOptions, "docker-options", "", "Specify the docker build options to use.  Value must be in \"\".")
+	buildCmd.PersistentFlags().BoolVar(&config.criu, "criu", false, "Makes appsody to build a startup optimized image")
 
 	buildCmd.AddCommand(newBuildDeleteCmd(config))
 	buildCmd.AddCommand(newSetupCmd(config))
 	return buildCmd
+}
+
+func DownloadFile(filepath string, url string) error {
+
+	// Get the data
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Create the file
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Write the body to file
+	_, err = io.Copy(out, resp.Body)
+	return err
 }
 
 func build(config *buildCommandConfig) error {
@@ -86,29 +113,43 @@ func build(config *buildCommandConfig) error {
 	if config.tag != "" {
 		buildImage = config.tag
 	}
-	//cmdName := "docker"
-	cmdArgs := []string{"-t", buildImage}
 
-	if config.dockerBuildOptions != "" {
-		dockerBuildOptions := strings.TrimPrefix(config.dockerBuildOptions, " ")
-		dockerBuildOptions = strings.TrimSuffix(dockerBuildOptions, " ")
-		options := strings.Split(dockerBuildOptions, " ")
-		err := checkDockerBuildOptions(options)
-		if err != nil {
-			return err
+	if config.criu {
+		dockerfile_url := "https://raw.githubusercontent.com/bharathappali/appsody-criu/master/Dockerfile_criu"
+		if err := DownloadFile(filepath.Join(extractDir,"Dockerfile_criu"), dockerfile_url); err != nil {
+			panic(err)
 		}
-		cmdArgs = append(cmdArgs, options...)
+		criu_checkpoint_script_url := "https://raw.githubusercontent.com/bharathappali/appsody-criu/master/criu-launcher.sh"
+		if err := DownloadFile(filepath.Join(extractDir,"criu-launcher.sh"), criu_checkpoint_script_url); err != nil {
+			panic(err)
+		}
+		criu_launcher_script := filepath.Join(extractDir, "criu-launcher.sh")
+		exec.Command("/bin/sh", criu_launcher_script)
+	} else {
+		//cmdName := "docker"
+		cmdArgs := []string{"-t", buildImage}
 
-	}
-	cmdArgs = append(cmdArgs, "-f", dockerfile, extractDir)
-	Debug.log("final cmd args", cmdArgs)
-	execError := DockerBuild(cmdArgs, DockerLog, config.Verbose, config.Dryrun)
+		if config.dockerBuildOptions != "" {
+			dockerBuildOptions := strings.TrimPrefix(config.dockerBuildOptions, " ")
+			dockerBuildOptions = strings.TrimSuffix(dockerBuildOptions, " ")
+			options := strings.Split(dockerBuildOptions, " ")
+			err := checkDockerBuildOptions(options)
+			if err != nil {
+				return err
+			}
+			cmdArgs = append(cmdArgs, options...)
 
-	if execError != nil {
-		return execError
-	}
-	if !config.Dryrun {
-		Info.log("Built docker image ", buildImage)
+		}
+		cmdArgs = append(cmdArgs, "-f", dockerfile, extractDir)
+		Debug.log("final cmd args", cmdArgs)
+		execError := DockerBuild(cmdArgs, DockerLog, config.Verbose, config.Dryrun)
+
+		if execError != nil {
+			return execError
+		}
+		if !config.Dryrun {
+			Info.log("Built docker image ", buildImage)
+		}
 	}
 	return nil
 }
