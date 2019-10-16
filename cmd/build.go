@@ -183,6 +183,7 @@ func build(config *buildCommandConfig) error {
         }
         cmd_load.Wait()
         return nil
+
     } else {
 	    cmdArgs := []string{"-t", buildImage}
 
