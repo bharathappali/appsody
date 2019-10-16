@@ -15,7 +15,11 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,6 +32,7 @@ type buildCommandConfig struct {
 	*RootCommandConfig
 	tag                string
 	dockerBuildOptions string
+	criu               bool
 }
 
 func checkDockerBuildOptions(options []string) error {
@@ -58,6 +63,7 @@ func newBuildCmd(rootConfig *RootCommandConfig) *cobra.Command {
 	}
 
 	buildCmd.PersistentFlags().StringVarP(&config.tag, "tag", "t", "", "Docker image name and optionally a tag in the 'name:tag' format")
+	buildCmd.PersistentFlags().BoolVar(&config.criu, "criu", false, "Makes appsody to build a startup optimized image")
 	buildCmd.PersistentFlags().StringVar(&config.dockerBuildOptions, "docker-options", "", "Specify the docker build options to use.  Value must be in \"\".")
 
 	buildCmd.AddCommand(newBuildDeleteCmd(config))
@@ -89,38 +95,128 @@ func build(config *buildCommandConfig) error {
 	if config.tag != "" {
 		buildImage = config.tag
 	}
-	cmdArgs := []string{"-t", buildImage}
 
-	if config.dockerBuildOptions != "" {
-		dockerBuildOptions := strings.TrimPrefix(config.dockerBuildOptions, " ")
-		dockerBuildOptions = strings.TrimSuffix(dockerBuildOptions, " ")
-		options := strings.Split(dockerBuildOptions, " ")
-		err := checkDockerBuildOptions(options)
-		if err != nil {
-			return err
-		}
-		cmdArgs = append(cmdArgs, options...)
-	}
+    if config.criu {
+        docker_capabilities := "--cap-add AUDIT_CONTROL --cap-add DAC_READ_SEARCH --cap-add NET_ADMIN --cap-add SYS_ADMIN  --cap-add SYS_PTRACE --cap-add SYS_RESOURCE --security-opt apparmor=unconfined --security-opt seccomp=unconfined"
+        docker_run_command := `docker run --rm `+ docker_capabilities +` --name="kaniko-image-builder" -v `+ extractDir +`:/kaniko-space -i gcr.io/kaniko-project/executor --dockerfile=Dockerfile --context=/kaniko-space --no-push  --tarPath=/kaniko-space/`+ projectName +`.tar.gz --destination=`+ projectName
+        cmd := exec.Command("/bin/sh", "-c", docker_run_command)
 
-	labels, err := getLabels(config)
-	if err != nil {
-		return err
-	}
+        logger := DockerLog
+		// Create io pipes for the command
+		run_logReader, run_logWriter := io.Pipe()
+		run_consoleReader, run_consoleWriter := io.Pipe()
+		cmd.Stdout = io.MultiWriter(run_logWriter, run_consoleWriter)
+		cmd.Stderr = io.MultiWriter(run_logWriter, run_consoleWriter)
 
-	// It would be nicer to only call the --label flag once. Could also use the --label-file flag.
-	for _, label := range labels {
-		cmdArgs = append(cmdArgs, "--label", label)
-	}
+		// Create a scanner for both the log and the console
+		// The log will be written when a newline is encountered
+		run_logScanner := bufio.NewScanner(run_logReader)
+		run_logScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		go func() {
+			for run_logScanner.Scan() {
+				logger.LogSkipConsole(run_logScanner.Text())
+			}
+		}()
 
-	cmdArgs = append(cmdArgs, "-f", dockerfile, extractDir)
-	Debug.log("final cmd args", cmdArgs)
-	execError := DockerBuild(cmdArgs, DockerLog, config.Verbose, config.Dryrun)
+		// The console will be written on every byte
+		run_consoleScanner := bufio.NewScanner(run_consoleReader)
+		run_consoleScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		run_consoleScanner.Split(bufio.ScanBytes)
+		go func() {
+			lastByteNewline := true
+			for run_consoleScanner.Scan() {
+				text := run_consoleScanner.Text()
+				if lastByteNewline && (config.Verbose || logger != Info) {
+					os.Stdout.WriteString("[" + logger.name + "] ")
+				}
+				os.Stdout.WriteString(text)
+				lastByteNewline = text == "\n"
+			}
+		}()
 
-	if execError != nil {
-		return execError
-	}
-	if !config.Dryrun {
-		Info.log("Built docker image ", buildImage)
+        err := cmd.Start()
+        if err != nil {
+            return err
+        }
+        cmd.Wait()
+
+        docker_load_command := `docker load -i ` + extractDir + `/` + projectName + `.tar.gz`
+        cmd_load := exec.Command("/bin/sh", "-c", docker_load_command)
+
+
+		// Create io pipes for the command
+		load_logReader, load_logWriter := io.Pipe()
+		load_consoleReader, load_consoleWriter := io.Pipe()
+		cmd_load.Stdout = io.MultiWriter(load_logWriter, load_consoleWriter)
+		cmd_load.Stderr = io.MultiWriter(load_logWriter, load_consoleWriter)
+
+		// Create a scanner for both the log and the console
+		// The log will be written when a newline is encountered
+		load_logScanner := bufio.NewScanner(load_logReader)
+		load_logScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		go func() {
+			for run_logScanner.Scan() {
+				logger.LogSkipConsole(run_logScanner.Text())
+			}
+		}()
+
+		// The console will be written on every byte
+		load_consoleScanner := bufio.NewScanner(load_consoleReader)
+		load_consoleScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		load_consoleScanner.Split(bufio.ScanBytes)
+		go func() {
+			lastByteNewline := true
+			for load_consoleScanner.Scan() {
+				text := load_consoleScanner.Text()
+				if lastByteNewline && (config.Verbose || logger != Info) {
+					os.Stdout.WriteString("[" + logger.name + "] ")
+				}
+				os.Stdout.WriteString(text)
+				lastByteNewline = text == "\n"
+			}
+		}()
+
+
+        load_err := cmd_load.Start()
+        if load_err != nil {
+            return load_err
+        }
+        cmd_load.Wait()
+        return nil
+    } else {
+	    cmdArgs := []string{"-t", buildImage}
+
+        if config.dockerBuildOptions != "" {
+            dockerBuildOptions := strings.TrimPrefix(config.dockerBuildOptions, " ")
+            dockerBuildOptions = strings.TrimSuffix(dockerBuildOptions, " ")
+            options := strings.Split(dockerBuildOptions, " ")
+            err := checkDockerBuildOptions(options)
+            if err != nil {
+                return err
+            }
+            cmdArgs = append(cmdArgs, options...)
+        }
+
+        labels, err := getLabels(config)
+        if err != nil {
+            return err
+        }
+
+        // It would be nicer to only call the --label flag once. Could also use the --label-file flag.
+        for _, label := range labels {
+            cmdArgs = append(cmdArgs, "--label", label)
+        }
+
+        cmdArgs = append(cmdArgs, "-f", dockerfile, extractDir)
+        Debug.log("final cmd args", cmdArgs)
+        execError := DockerBuild(cmdArgs, DockerLog, config.Verbose, config.Dryrun)
+
+            if execError != nil {
+                return execError
+            }
+            if !config.Dryrun {
+                Info.log("Built docker image ", buildImage)
+            }
 	}
 	return nil
 }
