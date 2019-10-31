@@ -35,6 +35,7 @@ type deployCommandConfig struct {
 	*RootCommandConfig
 	appDeployFile, namespace, tag  string
 	knative, generate, force, push bool
+	criu bool
 }
 
 type AppsodyApplication struct {
@@ -139,6 +140,9 @@ generates a deployment manifest (yaml) file if one is not present, and uses it t
 			// Extract code and build the image - and tags it if -t is specified
 			buildConfig := &buildCommandConfig{RootCommandConfig: config.RootCommandConfig}
 			buildConfig.tag = deployImage
+			if config.criu {
+				buildConfig.criu = true
+			}
 			buildErr := build(buildConfig)
 			if buildErr != nil {
 				return buildErr
@@ -242,6 +246,7 @@ generates a deployment manifest (yaml) file if one is not present, and uses it t
 	deployCmd.PersistentFlags().StringVarP(&config.tag, "tag", "t", "", "Docker image name and optionally a tag in the 'name:tag' format")
 	deployCmd.PersistentFlags().BoolVar(&config.push, "push", false, "Push this image to an external Docker registry. Assumes that you have previously successfully done docker login")
 	deployCmd.PersistentFlags().BoolVar(&config.knative, "knative", false, "Deploy as a Knative Service")
+	deployCmd.PersistentFlags().BoolVar(&config.criu, "criu", false, "Deploy a pre-checkpointed and instant restorable image to the kubernetes")
 
 	deployCmd.AddCommand(newDeleteDeploymentCmd(config))
 	return deployCmd
