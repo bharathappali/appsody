@@ -98,7 +98,7 @@ func build(config *buildCommandConfig) error {
 
     if config.criu {
         docker_capabilities := "--cap-add AUDIT_CONTROL --cap-add DAC_READ_SEARCH --cap-add NET_ADMIN --cap-add SYS_ADMIN  --cap-add SYS_PTRACE --cap-add SYS_RESOURCE --security-opt apparmor=unconfined --security-opt seccomp=unconfined"
-        docker_run_command := `docker run --rm `+ docker_capabilities +` --name="kaniko-image-builder" -v `+ extractDir +`:/kaniko-space -i gcr.io/kaniko-project/executor --dockerfile=Dockerfile --context=/kaniko-space --no-push  --tarPath=/kaniko-space/`+ projectName +`.tar.gz --destination=`+ projectName
+        docker_run_command := `docker run --rm `+ docker_capabilities +` --name="kaniko-image-builder" -v `+ extractDir +`:/kaniko-space -i gcr.io/kaniko-project/executor --dockerfile=Dockerfile_CRIU --context=/kaniko-space --no-push  --tarPath=/kaniko-space/`+ projectName +`.tar.gz --destination=`+ projectName
         cmd := exec.Command("/bin/sh", "-c", docker_run_command)
 
         logger := DockerLog

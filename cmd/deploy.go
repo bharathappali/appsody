@@ -338,6 +338,9 @@ func deployWithKnative(config *deployCommandConfig) error {
 
 func generateDeploymentConfig(config *deployCommandConfig) error {
 	containerConfigDir := "/config/app-deploy.yaml"
+	if config.criu {
+		containerConfigDir = "/config/app-deploy-criu.yaml"
+	}
 	configFile := config.appDeployFile
 
 	exists, err := Exists(configFile)
