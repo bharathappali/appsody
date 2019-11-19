@@ -97,9 +97,8 @@ func build(config *buildCommandConfig) error {
 	}
 
     if config.criu {
-        docker_capabilities := "--cap-add AUDIT_CONTROL --cap-add DAC_READ_SEARCH --cap-add NET_ADMIN --cap-add SYS_ADMIN  --cap-add SYS_PTRACE --cap-add SYS_RESOURCE --security-opt apparmor=unconfined --security-opt seccomp=unconfined"
-        docker_run_command := `docker run --rm `+ docker_capabilities +` --name="kaniko-image-builder" -v `+ extractDir +`:/kaniko-space -i gcr.io/kaniko-project/executor --dockerfile=Dockerfile_CRIU --context=/kaniko-space --no-push  --tarPath=/kaniko-space/`+ projectName +`.tar.gz --destination=`+ projectName
-        cmd := exec.Command("/bin/sh", "-c", docker_run_command)
+		criu_launcher_script := filepath.Join(extractDir, "criu-launcher.sh")
+		cmd := exec.Command("/bin/sh", "-c", criu_launcher_script + " " + extractDir + " " +projectName)
 
         logger := DockerLog
 		// Create io pipes for the command
@@ -140,48 +139,6 @@ func build(config *buildCommandConfig) error {
         }
         cmd.Wait()
 
-        docker_load_command := `docker load -i ` + extractDir + `/` + projectName + `.tar.gz`
-        cmd_load := exec.Command("/bin/sh", "-c", docker_load_command)
-
-
-		// Create io pipes for the command
-		load_logReader, load_logWriter := io.Pipe()
-		load_consoleReader, load_consoleWriter := io.Pipe()
-		cmd_load.Stdout = io.MultiWriter(load_logWriter, load_consoleWriter)
-		cmd_load.Stderr = io.MultiWriter(load_logWriter, load_consoleWriter)
-
-		// Create a scanner for both the log and the console
-		// The log will be written when a newline is encountered
-		load_logScanner := bufio.NewScanner(load_logReader)
-		load_logScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		go func() {
-			for run_logScanner.Scan() {
-				logger.LogSkipConsole(run_logScanner.Text())
-			}
-		}()
-
-		// The console will be written on every byte
-		load_consoleScanner := bufio.NewScanner(load_consoleReader)
-		load_consoleScanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		load_consoleScanner.Split(bufio.ScanBytes)
-		go func() {
-			lastByteNewline := true
-			for load_consoleScanner.Scan() {
-				text := load_consoleScanner.Text()
-				if lastByteNewline && (config.Verbose || logger != Info) {
-					os.Stdout.WriteString("[" + logger.name + "] ")
-				}
-				os.Stdout.WriteString(text)
-				lastByteNewline = text == "\n"
-			}
-		}()
-
-
-        load_err := cmd_load.Start()
-        if load_err != nil {
-            return load_err
-        }
-        cmd_load.Wait()
         return nil
 
     } else {
